@@ -1,0 +1,65 @@
+---
+title: "SEM"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+ind <- read.csv("roya_independentVariables.csv")
+roya <- readRDS("roya_uniqueplants_20210505.rds")
+evap <- readRDS("evap_std.rds") %>% 
+  mutate(quadrat = as.numeric(locID))
+
+dat <- roya %>% 
+  left_join(y = ind %>% select(plotID, aspect:avgTreeDist), 
+            by = c("quadrat" = "plotID")) %>%
+  left_join(y = evap %>% select(quadrat, evap))
+
+
+roya_quad16 <- roya %>% filter(hojas != 0) %>%
+  group_by(quadrat, year, date) %>% 
+  summarize(roya.mn = mean(roya/hojas, na.rm = TRUE)) %>% 
+  filter(date > 2016.5 & date < 2017.5)
+
+ggplot(roya_quad16, aes(date, roya.mn, group = quadrat)) + geom_line()
+
+roya_quadmax <- roya_quad16 %>% group_by(quadrat) %>%
+  summarize(roya.max = max(roya.mn))%>% 
+  left_join(y = ind %>% select(plotID, aspect:avgTreeDist), 
+            by = c("quadrat" = "plotID")) %>%
+  left_join(y = evap %>% select(quadrat, evap))
+
+```
+
+```{r relationships}
+library(PerformanceAnalytics)
+
+chart.Correlation(roya_quadmax %>%
+                    select(roya.max, aspect, coffeeDensity_m, 
+                           wind_m.s, shadeAvg_pc, avgTreeDist, evap) %>%
+                    as.matrix(), histogram=TRUE, pch=19)
+
+```
+```{r SEM}
+library(piecewiseSEM)
+
+m1 <- lm(evap ~ shadeAvg_pc + wind_m.s, data = roya_quadmax)
+performance::check_model(m1)
+m1b <- lm(evap ~ wind_m.s, data = roya_quadmax)
+
+m2 <- lm(wind_m.s ~ shadeAvg_pc, data = roya_quadmax)
+performance::check_model(m2)
+
+m3 <- lm(roya.max ~ evap + wind_m.s, data = roya_quadmax)
+m3b <- lm(roya.max ~ evap , data = roya_quadmax)
+m3c <- lm(roya.max ~ evap + shadeAvg_pc, data = roya_quadmax)
+m3d <- lm(roya.max ~ shadeAvg_pc, data = roya_quadmax)
+
+sem1 <- psem(m1, m2, m3)
+sem2 <- psem(m1b, m2, m3b)
+sem3 <- psem(m1b, m2, m3c)
+sem4 <- psem(m1b, m2, m3d)
+
+```

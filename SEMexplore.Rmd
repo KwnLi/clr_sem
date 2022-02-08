@@ -1,0 +1,99 @@
+---
+title: "SEM"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+ind <- read.csv("roya_independentVariables.csv")
+roya <- readRDS("roya_uniqueplants_20210505.rds")
+
+dat <- roya %>% left_join(y = ind, by = c("quadrat" = "plotID"))
+datmax <- dat %>% filter(date == 2017) %>% filter(hojas != 0 & roya < hojas) %>% mutate(roya_pc = roya/hojas)
+
+datmaxsum <- datmax %>% group_by(quadrat) %>%
+  summarize(roya_mn = mean(roya_pc)) %>% ungroup() %>%
+  left_join(ind, by = c("quadrat" = "plotID")) %>%
+  mutate(logevap = log(avgEvpRateConverted2_g.mm2.s)) %>%
+  mutate(roya_mn2 = ifelse(roya_mn == 0, roya_mn + 0.01, roya_mn))
+```
+
+What months are included in 2016?
+`r unique(dat$month)`
+
+Abiotic variable relationships
+```{r canop_moist}
+ggplot(datmaxsum, aes(shadeAvg_pc, logevap)) + geom_point() + geom_smooth(method = "lm")
+```
+
+```{r unimod_shade}
+ggplot(datmaxsum, aes(shadeAvg_pc, roya_mn)) + geom_point() + geom_smooth(method = "lm")
+```
+```{r moist_roya}
+ggplot(datmaxsum, aes(logevap, roya_mn)) + geom_point() + geom_smooth(method = "lm")
+```
+
+```{r cofdens_roya}
+ggplot(datmaxsum, aes(coffeeDensity_m, roya_mn)) + geom_point() + geom_smooth(method = "lm")
+```
+
+```{r cofdens_shade}
+ggplot(datmaxsum, aes(shadeAvg_pc, coffeeDensity_m)) + geom_point() + geom_smooth(method = "lm")
+```
+
+## single GLMM model
+```{r glmm}
+library(glmmTMB)
+library(DHARMa)
+datmax2 <- datmax %>% filter(roya_pc < 1)
+
+jan17.glmm <- glmmTMB(roya_pc ~ avgEvpRateConverted2_g.mm2.s + shadeAvg_pc + (1|quadrat),
+                      ziformula = ~ avgEvpRateConverted2_g.mm2.s + shadeAvg_pc + (1|quadrat),
+                      family = beta_family(), 
+                      data = datmax2)
+
+sim.jan17 <- simulateResiduals(jan17.glmm)
+
+jan17.glmm2 <- glmmTMB(roya ~ avgEvpRateConverted2_g.mm2.s + shadeAvg_pc + (1|quadrat),
+                      ziformula = ~ avgEvpRateConverted2_g.mm2.s + shadeAvg_pc + (1|quadrat),
+                      family = nbinom2(), 
+                      # offset = log(hojas),
+                      data = datmax2)
+
+sim.jan172 <- simulateResiduals(jan17.glmm2)
+```
+
+```{r pcwise_sem}
+library(piecewiseSEM)
+library(MASS)
+
+mod1a <- glmmTMB(roya_mn ~ logevap + shadeAvg_pc,
+                      ziformula = ~ 1,
+                      family = beta_family(), 
+                      data = datmaxsum)
+
+mod1b <- glm(roya_mn2 ~ shadeAvg_pc,
+                      # ziformula = ~ 1,
+                      family = Gamma(), 
+                      data = datmaxsum)
+
+mod1c <- glm(roya_mn2 ~ coffeeDensity_m + shadeAvg_pc,
+                      # ziformula = ~ 1,
+                      family = Gamma(), 
+                      data = datmaxsum)
+
+mod2a <- lm(logevap ~ shadeAvg_pc,
+                      data = datmaxsum)
+
+test <- simulateResiduals(mod2a)
+
+mod3a <- glm.nb(coffeeDensity_m ~ shadeAvg_pc,
+                      data = datmaxsum)
+test <- simulateResiduals(mod3a)
+
+coffee.med <- psem(mod1c, mod3a)
+coffee.nomed <- psem(mod1b, mod3a)
+
+```
