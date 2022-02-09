@@ -7,8 +7,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 
-ind <- read.csv("roya_independentVariables.csv")
-roya <- readRDS("roya_uniqueplants_20210505.rds")
+ind <- read.csv("data/roya_independentVariables.csv")
+roya <- readRDS("data/roya_uniqueplants_20210505.rds")
 
 dat <- roya %>% left_join(y = ind, by = c("quadrat" = "plotID"))
 datmax <- dat %>% filter(date == 2017) %>% filter(hojas != 0 & roya < hojas) %>% mutate(roya_pc = roya/hojas)

@@ -4,62 +4,118 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 
-ind <- read.csv("roya_independentVariables.csv")
-roya <- readRDS("roya_uniqueplants_20210505.rds")
+library(tidyverse)
+library(zoo)
+library(piecewiseSEM)
+library(PerformanceAnalytics)
+
+ind <- read.csv("data/roya_independentVariables.csv")
+roya <- readRDS("data/roya_uniqueplants_20210505.rds")
+gbh <- read.csv("data/roya_treeBasalArea.csv")
+
+gbh_sum <- gbh %>% group_by(plotID) %>% 
+  summarize(gbh_sum = sum(ba_all_cm2, na.rm = T))
+
 evap <- readRDS("evap_std.rds") %>% 
   mutate(quadrat = as.numeric(locID))
 
-dat <- roya %>% 
-  left_join(y = ind %>% select(plotID, aspect:avgTreeDist), 
-            by = c("quadrat" = "plotID")) %>%
-  left_join(y = evap %>% select(quadrat, evap))
-
+# dat <- roya %>% 
+#   left_join(y = ind %>% select(plotID, aspect:avgTreeDist), 
+#             by = c("quadrat" = "plotID")) %>%
+#   left_join(y = gbh_sum, by = c("quadrat" = "plotID")) %>%
+#   left_join(y = evap %>% select(quadrat, evap))
 
 roya_quad16 <- roya %>% filter(hojas != 0) %>%
   group_by(quadrat, year, date) %>% 
   summarize(roya.mn = mean(roya/hojas, na.rm = TRUE)) %>% 
   filter(date > 2016.5 & date < 2017.5)
 
-ggplot(roya_quad16, aes(date, roya.mn, group = quadrat)) + geom_line()
-
 roya_quadmax <- roya_quad16 %>% group_by(quadrat) %>%
   summarize(roya.max = max(roya.mn))%>% 
-  left_join(y = ind %>% select(plotID, aspect:avgTreeDist), 
+  left_join(y = ind %>% select(plotID, aspect:avgTreeDist, tree_10m), 
             by = c("quadrat" = "plotID")) %>%
-  left_join(y = evap %>% select(quadrat, evap))
+  left_join(y = gbh_sum, by = c("quadrat" = "plotID")) %>%
+  left_join(y = evap %>% select(quadrat, evap)) %>%
+  mutate(wind_ln = log(ifelse(wind_m.s == 0, 0.15, wind_m.s))) %>%
+  mutate(roya_asqt = asin(sqrt(roya.max))) %>%
+  mutate(shade_asqt = asin(sqrt(shadeAvg_pc/100))) %>%
+  mutate(coffeeDens_ln = log(ifelse(coffeeDensity_m == 0, 0.5, coffeeDensity_m))) %>%
+  mutate(tree_ln = log(tree_10m)) %>%
+  mutate(treedist_ln = log(avgTreeDist))
 
 ```
+## Data relationships revisited
 
-```{r relationships}
-library(PerformanceAnalytics)
+I tried transforming the data because we are running linear regressions. Some of the data might result in non-normal residuals by the nature of their data. So I applied log transformations to data that seemed related to count values or seemed log-normal (trees within 10m, density of coffee, distance to nearest tree, and wind). I applied an arcsin square-root transformation for proportion data (shade and leaves infected)
 
+### Relationships between untransformed data
+
+```{r relationships_untransformed}
 chart.Correlation(roya_quadmax %>%
-                    select(roya.max, aspect, coffeeDensity_m, 
-                           wind_m.s, shadeAvg_pc, avgTreeDist, evap) %>%
+                    select(roya.max, coffeeDensity_m,
+                           wind_m.s, shadeAvg_pc, avgTreeDist, 
+                           tree_10m, evap) %>%
                     as.matrix(), histogram=TRUE, pch=19)
 
 ```
-```{r SEM}
-library(piecewiseSEM)
 
-m1 <- lm(evap ~ shadeAvg_pc + wind_m.s, data = roya_quadmax)
-performance::check_model(m1)
-m1b <- lm(evap ~ wind_m.s, data = roya_quadmax)
+### Relationships between transformed data
 
-m2 <- lm(wind_m.s ~ shadeAvg_pc, data = roya_quadmax)
-performance::check_model(m2)
+```{r relationships_transformed}
+chart.Correlation(roya_quadmax %>%
+                    select(roya_asqt, coffeeDens_ln,
+                           wind_ln, shade_asqt, treedist_ln, 
+                           tree_ln, evap) %>%
+                    as.matrix(), histogram=TRUE, pch=19)
 
-m3 <- lm(roya.max ~ evap + wind_m.s, data = roya_quadmax)
-m3b <- lm(roya.max ~ evap , data = roya_quadmax)
-m3c <- lm(roya.max ~ evap + shadeAvg_pc, data = roya_quadmax)
-m3d <- lm(roya.max ~ shadeAvg_pc, data = roya_quadmax)
+```
+
+## SEM models
+
+I've gone ahead and fit the linear models to the transformed data since this meets the assumptions of the model. If we want in the future, we could fit generalized linear models that are appropriate for the original data distributions
+
+### SEM 1
+
+```{r SEM1}
+
+m1 <- lm(roya_asqt ~ wind_ln + evap, data = roya_quadmax)
+
+m2 <- lm(wind_ln ~ tree_ln, data = roya_quadmax)
+
+m3 <- lm(evap ~ shade_asqt + wind_ln, data = roya_quadmax)
 
 sem1 <- psem(m1, m2, m3)
-sem2 <- psem(m1b, m2, m3b)
-sem3 <- psem(m1b, m2, m3c)
-sem4 <- psem(m1b, m2, m3d)
 
+summary(sem1, .progressBar = FALSE)
+plot(sem1)
+```
+
+### SEM 2
+
+```{r SEM2}
+
+n1 <- lm(roya_asqt ~ evap + tree_ln, data = roya_quadmax)
+
+n2 <- lm(evap ~ shade_asqt + tree_ln, data = roya_quadmax)
+
+sem2 <- psem(n1, n2)
+
+summary(sem2, .progressBar = FALSE)
+plot(sem2)
+```
+
+### SEM 3
+
+```{r SEM3}
+
+o1 <- lm(roya_asqt ~ shade_asqt + tree_ln, data = roya_quadmax)
+
+o2 <- lm(shade_asqt ~ tree_ln, data = roya_quadmax)
+
+sem3 <- psem(o1, o2)
+
+summary(sem3, .progressBar = FALSE)
+plot(sem3)
 ```
