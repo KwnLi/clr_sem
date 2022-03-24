@@ -11,7 +11,6 @@ library(tidyverse)
 library(lubridate)
 library(egg)
 library(mgcv)
-library(mixedup)
 
 ```
 
@@ -39,7 +38,10 @@ evap_all <- evap %>% select(date:evpRate_g.mm2.s) %>%
   rowwise() %>% 
   mutate(dateTime = mean(c(startTime, endTime))) %>% # the date/time at the center of the drying period
   ungroup() %>%
-  mutate(decTime = hour(dateTime) + minute(dateTime)/60 + second(dateTime)/3600) %>% # the decimal time at the center of the drying period
+  mutate(decTime = hour(dateTime) + 
+           minute(dateTime)/60 + 
+           second(dateTime)/3600) %>% # the decimal time at the center of the drying period
+  mutate(hr.2 = round(decTime/2,0)) %>%
   mutate(evapRate_ng = ifelse(evpRate_g.mm2.s > 0, evpRate_g.mm2.s*1e9, 1)) %>%  # evaporation rate in nanograms, so the units aren't so small
   mutate(locID = factor(ifelse(is.na(plotID), type, plotID))) %>%  # locID and locType are just to help with plotting
   mutate(locType = ifelse(is.na(plotID), type, "plot")) %>%
@@ -107,21 +109,55 @@ I've fit a GAM over time for control locations or plots, but separately by month
 
 ## Model
 
-First attempt at a model. The effect of time is fit as a spline and the effects of date are random effects.
+Linear mixed models
+
+```{r lmer_models}
+library(lme4)
+library(lmerTest)
+
+evap_lmer <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (1|dateFac) + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+evap_lmer_polyre <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 2)|dateFac) + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+testlmer <- simulateResiduals(evap_lmer_polyre, n=1000)
+
+testlmer.grp <- recalculateResiduals(testlmer, group = evap_all$locID)
+
+evap_glmer <- glmer(evapRate_ng ~ poly(decTime, 2) + (1|dateFac) + (1|locID),
+          data = evap_all, family = Gamma(link = "identity"))
+
+evap_glmer_polyre <- glmer(evapRate_ng ~ poly(decTime, 2) + (poly(decTime, 2)|dateFac) + (1|locID),
+          data = evap_all, family = Gamma(link = "inverse"))
+
+test_evap_lmer_polyre <- simulateResiduals(evap_lmer_polyre)
+
+```
+
+Here is a nonlinear model
 
 ```{r first_gam}
 
-m1 <- gam(evapRate_ng ~ s(decTime, k = 8, m = 2) + 
-            s(dateFac, bs = "re", k = 34) + 
-            s(locID, bs = "re", k = 131),
-          data = evap_all, method = "REML", family = "gaussian")
+m1 <- gam(log(evapRate_ng) ~ 0 + locID +s(decTime, k = 8, m = 2) + 
+            s(dateFac, bs = "re", k = 34),
+            # s(locID, bs = "re", k = 131),
+          data = evap_all, 
+          method = "REML", family = "gaussian")
+
+m1b <- gamm(evapRate_ng ~ 0 + locID +s(decTime, k = 8, m = 2),
+            random = list(dateFac = ~1),
+            # s(locID, bs = "re", k = 131),
+          data = evap_all, 
+          method = "REML", family = "gaussian")
 
 plot(m1)
 
 gam.check(m1)
 
 summary(m1)
-
 
 ```
 
@@ -131,10 +167,66 @@ In model 1 I treated each separate day as independent, i.e., the same day has th
 
 ```{r model2}
 
-m2 <- gam(evapRate_ng ~ s(decTime, k = 10, m = 2) + 
-            s(dateNum, k = 12, m = 2) + 
+m2 <- gam(evapRate_ng ~
+            s(decTime, k = 10, m = 2) +
+            s(dateNum, k = 12, m = 2) +
             s(locID, bs = "re", k = 131),
-          data = evap_all, method = "REML", family = "gaussian")
+          data = evap_all, family = "gaussian")
+
+# problems with residuals with log + gaussian or no log + scat (and no transformation + gaussian)
+m2_log <- gam(log(evapRate_ng) ~
+            s(decTime, k = 10, m = 2) +
+            s(dateNum, k = 12, m = 2) +
+            s(locID, bs = "re", k = 131),
+          data = evap_all, family = "gaussian")
+
+m2_scat <- gam(evapRate_ng ~
+            s(decTime, k = 10, m = 2) +
+            s(dateNum, k = 12, m = 2) +
+            s(locID, bs = "re", k = 131),
+          data = evap_all, family = "scat")
+
+# residuals look good but explains least amount of variance
+m2_log_scat <- gam(log(evapRate_ng) ~ 
+            s(decTime, k = 40, m = 2) + 
+            s(dateNum, k = 24, m = 2) + 
+            s(locID, bs = "re", k = 131),
+          data = evap_all, family = "scat")
+
+rsd <- residuals(m2_log_scat)
+gam(rsd~s(decTime,k=40,bs="cs"),gamma=1.4,data=evap_all)
+
+
+m2b <- gam(evapRate_ng ~ 0 + locID +
+             s(decTime,dateNum),
+          data = evap_all, family = "gaussian")
+
+m2c <- gam(evapRate_ng ~ 0 + locID +
+             t2(decTime,dateNum),
+          data = evap_all, family = "gaussian")
+
+m2d <- gam(evapRate_ng ~ 0 + locID +
+             te(decTime,dateNum),
+          data = evap_all, family = "gaussian")
+
+m2e <- gam(evapRate_ng ~ 0 + locID +
+            s(decTime, k = 10, m = 2) + 
+            s(dateNum, k = 12, m = 2) + 
+            ti(decTime, dateNum, k = c(10,12), m = c(2,2)),
+          data = evap_all, family = "gaussian")
+
+m2f <- gam(evapRate_ng ~ 0 + locID +
+            s(decTime) + 
+            s(dateNum) + 
+            ti(decTime, dateNum),
+          data = evap_all, family = "gaussian")
+
+m2g <- gam(log(evapRate_ng) ~ s(locID, bs = "re", k = 131) +
+            s(decTime, k = 10, m = 2) + 
+            s(dateNum, k = 12, m = 2) + 
+            ti(decTime, dateNum, k = c(10,12), m = c(2,2)),
+          data = evap_all, family = "scat")
+
 
 summary(m2)
 
@@ -144,6 +236,73 @@ gam.check(m2)
 
 performance::compare_performance(m1, m2)
 
+```
+
+## Autoregression
+
+I tried autoregression but there is a limitation of having one observation per timestep. How the replicates are set up makes it confusing how to match this requirement.
+
+Instead I have summarized by means for each day/location combo (within 1 hr windows, so if a control point was visited in the morning and afternoon these would be separate data points)
+
+```{r autoreg}
+library(forecast)
+library(igraph)
+
+sampling.adj<- dist(evap_all$dateTime) %>% as.matrix() < 60*60
+diag(sampling.adj) <- 0
+
+group.adj <- outer(evap_all$locID, evap_all$locID, FUN = "==")
+diag(group.adj) <- 0
+
+all.adj <- sampling.adj * group.adj
+
+sampling.groups <- fastgreedy.community(as.undirected(graph.adjacency(all.adj))) %>%
+  stack() %>% rename(rowid = values, time.group = ind)
+
+evap_quad <- evap_all %>% rowid_to_column() %>% mutate(rowid = as.character(rowid)) %>%
+  left_join(sampling.groups) %>%
+  group_by(locID, dateNum, dateFac, time.group) %>%
+  summarize(n = n(), decTime = mean(decTime), evapRate_mn = mean(evapRate_ng), .groups = "drop") %>%
+  mutate(hr = round(decTime, 0)) %>% mutate(decmin = round(decTime*6, 0))
+
+# quadrat means, numeric date
+mquad_datenum <- gam(log(evapRate_ng) ~ 
+               s(decTime, k = 10, m = 2) + 
+               s(dateNum, k = 12, m = 2) + 
+               ti(decTime, dateNum, k = c(10,12), m = c(2,2)) +
+            s(locID, bs = "re", k = 131),
+             data = evap_all,
+             family = "scat")
+
+# quadrat means, numeric date
+mquad_datefac <- gam(log(evapRate_ng) ~ 
+               s(decTime, k = 10, m = 2) + 
+                 s(dateFac, bs = "re", k = 34) +
+            s(locID, bs = "re", k = 131),
+             data = evap_all,
+             family = "scat")
+
+# autoregressive model doesn't work
+# m2e_ar1 <- gamm(evapRate_mn ~ 0 + locID + 
+#                   s(decmin, k = 10, m = 2) + 
+#                   s(dateFac, bs = "re", k = 34),
+#              data = evap_quad,
+#              family = gaussian,
+#              correlation = corARMA(form = ~ decmin|dateFac, p = 1),
+#              method = "REML")
+
+arma_res <- auto.arima(resid(m2e_ar0$lme, type = "normalized"),
+                       stationary = TRUE, seasonal = FALSE)
+
+pacf(resid(m2e_ar0$lme, type = "normalized"), lag.max = 48, main = "pACF of gam n.6")
+pacf(resid(m2e_ar1$lme, type = "normalized"), lag.max = 48, main = "pACF of gam n.6")
+```
+
+```{r test_models}
+library(DHARMa)
+
+testm1 <- simulateResiduals(m1)
+acf(resid(m1), lag.max = 36, main = "ACF")
 ```
 
 Get the random effects estimates of the plots

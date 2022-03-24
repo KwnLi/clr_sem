@@ -1,0 +1,310 @@
+---
+title: "evaporation"
+author: "Kevin Li"
+date: "10/26/2021"
+output: html_document
+---
+
+```{r setup, message= FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(egg)
+library(mgcv)
+
+```
+
+## Evaporation data from raw
+
+Just exploring evaporation starting from raw data. First combine the control and plot data into one unified dataset with time and date. 
+
+```{r combine_raw}
+evap <- read.csv("./data/evap_raw.csv")
+evap_ctrl <- read.csv("./data/evap_control.csv")
+rain <- readRDS("Data/dailyrain.rds")
+
+evap_all <- evap %>% select(date:evpRate_g.mm2.s) %>%
+  filter(paperID != "") %>%
+  bind_rows(
+    evap_ctrl %>% select(date:evpRate_g.mm2.s) %>%
+      filter(startTime != "") %>%
+      rename(paperID = ID)
+  ) %>%
+  mutate(startTime = as.POSIXlt(paste(date, startTime, sep = ":"), 
+                             format = "%m/%d/%Y:%H:%M:%S")) %>% # I convert the time and date columns to r formats
+  mutate(endTime = as.POSIXlt(paste(date, endTime, sep = ":"), 
+                             format = "%m/%d/%Y:%H:%M:%S")) %>%
+  mutate(date = as.Date(date, "%m/%d/%Y")) %>%
+  rowwise() %>% 
+  mutate(dateTime = mean(c(startTime, endTime))) %>% # the date/time at the center of the drying period
+  ungroup() %>%
+  mutate(decTime = hour(dateTime) + 
+           minute(dateTime)/60 + 
+           second(dateTime)/3600) %>% # the decimal time at the center of the drying period
+  mutate(hr.2 = round(decTime/2,0)) %>%
+  mutate(evapRate_ng = ifelse(evpRate_g.mm2.s > 0, evpRate_g.mm2.s*1e9, 1)) %>%  # evaporation rate in nanograms, so the units aren't so small
+  mutate(locID = factor(ifelse(is.na(plotID), type, plotID))) %>%  # locID and locType are just to help with plotting
+  mutate(locType = ifelse(is.na(plotID), type, "plot")) %>%
+  mutate(dateFac = factor(date)) %>%
+  mutate(dateNum = as.numeric(date - as.Date("05/30/2016", "%m/%d/%Y"))) %>%
+  left_join(rain %>% 
+              mutate(rain_lag = dplyr::lag(rain_mm, order_by = date)) %>%
+              select(date, rain_mm, rain_lag))
+```
+
+## Plot some of the data
+
+```{r loess_date, message=FALSE}
+ggplot(evap_all, 
+       aes(date, evapRate_ng, color = plotID, shape = locType, group = locType)) + 
+  geom_point() + geom_smooth() + 
+  scale_shape_manual(values = c(0:2, 19)) + 
+  scale_color_distiller(palette = "Spectral") + 
+  facet_wrap(~ locType)
+
+```
+
+Here I plot the three control datasets separately and all the plots together against the dates. I fit a LOESS smoothing to the data, which is like a moving window type of analysis, as I understand it. These are the raw data points, not averages.
+
+### Mean evaporation rate by date
+
+```{r spaghetti_mn}
+ggplot(evap_all %>% group_by(date, locID, plotID, locType) %>% 
+         summarize(evap_mn = mean(evapRate_ng)), 
+       aes(date, evap_mn, color = plotID, shape = locType, group = locID)) + 
+  geom_line() + geom_point() +
+  scale_shape_manual(values = c(0:2, 19)) + 
+  scale_color_distiller(palette = "Spectral") + 
+  facet_wrap(~ locType)
+```
+
+I've taken the mean of the evaporation rate on each date, by plot or control location. Individual plots or control points are connected by a line.
+
+### Time of day
+
+```{r gam_time}
+ggplot(evap_all, 
+       aes(decTime, evapRate_ng, color = plotID, shape = locType, group = locType)) + 
+  geom_point() + geom_smooth(method = "gam") + 
+  scale_shape_manual(values = c(0:2, 19)) + 
+  scale_color_distiller(palette = "Spectral") + 
+  facet_wrap(~ locType)
+```
+
+I've fit a GAM to the raw (unaveraged) data over time of day over the control locations and the plots (taken together)
+
+### Time of day, over months
+
+```{r gam_time_month}
+
+ggplot(evap_all %>% mutate(month = month(date)), 
+       aes(decTime, evapRate_ng, color = locType, shape = locType)) + 
+  geom_point() + geom_smooth(method = "gam") + 
+  scale_shape_manual(values = c(0:2, 19)) + 
+  facet_wrap(~ month) + theme_article()
+
+```
+
+I've fit a GAM over time for control locations or plots, but separately by months, to see if the nonlinear relationship changes over time.
+
+## Model
+
+Linear mixed models
+
+```{r lmer_models}
+library(lme4)
+library(lmerTest)
+
+evap_lmer <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (1|dateFac) + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+evap_lmer_polyre1 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 1)|dateFac) + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+evap_lmer_polyre2 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 2)|dateFac) + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+evap_lmer_polyre1v2 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 1)|dateFac) + (poly(decTime, 1)|locID),
+          data = evap_all, 
+          REML = F)
+
+evap_lmer_polyre1v3 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (1|dateFac) + (poly(decTime, 1)|locID),
+          data = evap_all, 
+          REML = F)
+
+
+performance::compare_performance(evap_lmer, evap_lmer_polyre1, evap_lmer_polyre2, evap_lmer_polyre1v2, evap_lmer_polyre1v3)
+
+testlmer <- simulateResiduals(evap_lmer_polyre, n=1000)
+
+testlmer.grp <- recalculateResiduals(testlmer, group = evap_all$locID)
+
+
+evap_lmer_datenum <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + dateNum + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+evap_lmer_datenum_poly <- lmer(log(evapRate_ng) ~ poly(decTime, 2) * dateNum + (1|locID),
+          data = evap_all, 
+          REML = F)
+
+# evap_glmer <- glmer(evapRate_ng ~ poly(decTime, 2) + (1|dateFac) + (1|locID),
+#           data = evap_all, family = Gamma(link = "identity"))
+# 
+# evap_glmer_polyre <- glmer(evapRate_ng ~ poly(decTime, 2) + (poly(decTime, 2)|dateFac) + (1|locID),
+#           data = evap_all, family = Gamma(link = "inverse"))
+# 
+# test_evap_lmer_polyre <- simulateResiduals(evap_lmer_polyre)
+
+```
+
+
+View prediction curves by plots. Curves show estimated prediction based on the "middle" date for the data points taken for that plot
+
+```{r predictions_plot}
+
+dateloccombo <- evap_all %>% group_by(locID) %>% summarize(dateFac = factor(quantile(date, p = 0.5, type = 1)), .groups = "drop")
+
+newdata_dateloc <- dateloccombo %>% slice(rep(1:n(), times = length(seq(6,15,by = 0.5)))) %>%
+  mutate(decTime = rep(seq(6,15,by = 0.5), each = nrow(dateloccombo)))
+
+pred_evap_0 <- predict(evap_lmer, newdata = newdata_dateloc)
+pred_evap_p1 <- predict(evap_lmer_polyre1, newdata = newdata_dateloc)
+pred_evap_p2 <- predict(evap_lmer_polyre2, newdata = newdata_dateloc)
+pred_evap_p1v2 <- predict(evap_lmer_polyre1v2, newdata = newdata_dateloc)
+pred_evap_p1v3 <- predict(evap_lmer_polyre1v3, newdata = newdata_dateloc)
+newdata_dateloc$pred.evap.0 = exp(pred_evap_0)
+newdata_dateloc$pred.evap.p1 = exp(pred_evap_p1)
+newdata_dateloc$pred.evap.p2 = exp(pred_evap_p2)
+newdata_dateloc$pred.evap.p1v2 = exp(pred_evap_p1v2)
+newdata_dateloc$pred.evap.p1v3 = exp(pred_evap_p1v3)
+
+ggplot(newdata_dateloc, aes(decTime)) + 
+  geom_line(aes(y = pred.evap.0), color = "grey", alpha = 0.4) + 
+  geom_line(aes(y = pred.evap.p1), color = "blue", alpha = 0.4) + 
+  geom_line(aes(y = pred.evap.p2), color = "red", alpha = 0.4) +
+  geom_line(aes(y = pred.evap.p1v2), color = "green", alpha = 0.4) +
+  geom_line(aes(y = pred.evap.p1v2), color = "purple", alpha = 0.4) +
+  geom_point(data = evap_all, mapping = aes(decTime, evapRate_ng), inherit.aes = F) + 
+  facet_wrap(~locID) + theme_article()
+
+```
+
+
+```{r predictions_date}
+
+datelocunq <- evap_all %>% group_by(dateFac, locID) %>% summarize(n = n(), .groups = "drop")
+
+newdata_date <- datelocunq %>% select(dateFac, locID) %>% slice(rep(1:n(), times = length(seq(6,15,by = 0.5)))) %>%
+  mutate(decTime = rep(seq(6,15,by = 0.5), each = nrow(datelocunq)))
+
+dpred_evap_0 <- predict(evap_lmer, newdata = newdata_date)
+dpred_evap_p1 <- predict(evap_lmer_polyre1, newdata = newdata_date)
+dpred_evap_p2 <- predict(evap_lmer_polyre2, newdata = newdata_date)
+newdata_date$pred.evap.0 = exp(dpred_evap_0)
+newdata_date$pred.evap.p1 = exp(dpred_evap_p1)
+newdata_date$pred.evap.p2 = exp(dpred_evap_p2)
+
+newdata_date <- newdata_date %>% left_join(evap_all %>% select(locID, locType) %>% distinct())
+
+ggplot(newdata_date, aes(decTime, group = locID, color = locType)) + 
+  # geom_line(aes(y = pred.evap.0), color = "grey", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p1), color = "blue", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p2), color = "red", alpha = 0.2) +
+  geom_line(aes(y = pred.evap.p1), alpha = 0.5) + 
+  geom_point(data = evap_all, mapping = aes(decTime, evapRate_ng, color = locType), inherit.aes = F) + 
+  facet_wrap(~dateFac) + theme_article()
+
+ggplot(newdata_date %>% filter(locType == "plot"), aes(decTime, color = locID)) + 
+  # geom_line(aes(y = pred.evap.0), color = "grey", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p1), color = "blue", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p2), color = "red", alpha = 0.2) +
+  geom_line(aes(y = pred.evap.p1), alpha = 0.8) + 
+  geom_point(data = evap_all %>% filter(locType == "plot"),
+             mapping = aes(decTime, evapRate_ng, color = locID), inherit.aes = F) + 
+  facet_wrap(~dateFac) + theme_article() + theme(legend.position = "none")
+
+ggplot(newdata_date %>% filter(locType == "control1"), aes(decTime, group = locID)) + 
+  # geom_line(aes(y = pred.evap.0), color = "grey", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p1), color = "blue", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p2), color = "red", alpha = 0.2) +
+  geom_line(aes(y = pred.evap.p1), alpha = 0.8) + 
+  geom_point(data = evap_all %>% filter(locType == "control1"),
+             mapping = aes(decTime, evapRate_ng), inherit.aes = F) + 
+  facet_wrap(~dateFac) + theme_article() + theme(legend.position = "none")
+
+ggplot(newdata_date %>% filter(locType == "gazebo"), aes(decTime, group = locID)) + 
+  # geom_line(aes(y = pred.evap.0), color = "grey", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p1), color = "blue", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p2), color = "red", alpha = 0.2) +
+  geom_line(aes(y = pred.evap.p1), alpha = 0.8) + 
+  geom_point(data = evap_all %>% filter(locType == "gazebo"),
+             mapping = aes(decTime, evapRate_ng), inherit.aes = F) + 
+  facet_wrap(~dateFac) + theme_article() + theme(legend.position = "none")
+
+ggplot(newdata_date %>% filter(locType == "house"), aes(decTime, group = locID)) + 
+  # geom_line(aes(y = pred.evap.0), color = "grey", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p1), color = "blue", alpha = 0.2) + 
+  # geom_line(aes(y = pred.evap.p2), color = "red", alpha = 0.2) +
+  geom_line(aes(y = pred.evap.p1), alpha = 0.8) + 
+  geom_point(data = evap_all %>% filter(locID == "house"),
+             mapping = aes(decTime, evapRate_ng), inherit.aes = F) +
+  facet_wrap(~dateFac) + theme_article() + theme(legend.position = "none")
+
+```
+
+```{r predicted_values}
+# based on model evap_lmer_polyre1
+
+pred_dat <- data.frame(locID = rep(unique(evap_all$locID), each = length(unique(evap_all$dateFac))), 
+                       decTime = 10, 
+                       dateFac = rep(unique(evap_all$dateFac), times = length(unique(evap_all$locID))))
+
+pred_dat$pred.evap.0 = exp(predict(evap_lmer, newdata = pred_dat))
+pred_dat$pred.evap.1 = exp(predict(evap_lmer_polyre1, newdata = pred_dat))
+
+ggplot(pred_dat) + 
+  # geom_histogram(aes(x = pred.evap.0), color = "green", alpha = 0.2) + 
+  geom_histogram(aes(x = pred.evap.1), color = "blue", alpha = 0.2) +
+  facet_wrap(~locID) + theme_article()
+
+```
+
+# cross validation of the best model
+```{r cross_val}
+
+# using the model with 
+
+```
+
+# Look at the relationship between standardized evap and roya
+
+```{r roya}
+roya <- readRDS("roya_uniqueplants_20210505.rds")
+
+roya_quad16 <- roya %>% filter(hojas != 0) %>%
+  group_by(quadrat, year, date) %>% 
+  summarize(roya.mn = mean(roya/hojas, na.rm = TRUE)) %>% 
+  filter(date > 2016.5 & date < 2017.5)
+
+ggplot(roya_quad16, aes(date, roya.mn, group = quadrat)) + geom_line()
+
+roya_quadmax <- roya_quad16 %>% group_by(quadrat) %>%
+  summarize(roya.max = max(roya.mn)) %>%
+  mutate(locID = as.character(quadrat))
+
+evaproya <- evap_std %>% left_join(roya_quadmax)
+
+ggplot(evaproya, aes(evap, roya.max)) + geom_point() + theme_article() + 
+  geom_smooth(method = "lm")
+
+evaplm <- lm(roya.max ~ evap, data = evaproya)
+
+summary(evaplm)
+
+saveRDS(evap_std, "evap_std.rds")
+
+```

@@ -1,0 +1,74 @@
+---
+title: "wind"
+output: html_document
+---
+
+```{r setup, message= FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(egg)
+library(mgcv)
+
+```
+
+## Wind
+
+Raw wind
+
+```{r combine_raw}
+rawdata <- read.csv("./data/evap_raw.csv")
+rawdata_ctrl <- read.csv("./data/evap_control.csv")
+
+wind_all <- rawdata %>% select(date:type, wind_time, wind_m.s) %>%
+  filter(!is.na(wind_m.s)) %>% mutate(plotID = as.character(plotID)) %>%
+  bind_rows(
+    rawdata_ctrl %>% select(date:type, wind_time, wind_m.s) %>%
+      filter(!is.na(wind_m.s))
+  ) %>%
+  mutate(dateTime = as.POSIXlt(paste(date, wind_time, sep = ":"), 
+                             format = "%m/%d/%Y:%I:%M %p")) %>% # I convert the time and date columns to r formats
+  mutate(date = as.Date(date, "%m/%d/%Y")) %>%
+  mutate(decTime = hour(dateTime) + 
+           minute(dateTime)/60 + 
+           second(dateTime)/3600) %>% # the decimal time at the center of the drying period
+  mutate(qtrHr = round(decTime*4, 0)) %>%
+  mutate(locID = factor(ifelse(is.na(plotID), type, plotID))) %>%  # locID and locType are just to help with plotting
+  mutate(locType = ifelse(is.na(plotID), type, "plot")) %>%
+  mutate(dateFac = factor(date)) %>%
+  mutate(dateNum = as.numeric(date - as.Date("05/30/2016", "%m/%d/%Y")))
+
+```
+
+### Time of day, over months
+
+```{r gam_time_month}
+
+ggplot(wind_all %>% mutate(month = month(date)), 
+       aes(decTime, wind_m.s, color = locType, shape = locType)) + 
+  geom_point() + 
+  scale_shape_manual(values = c(0:2, 19)) + 
+  facet_wrap(~ month) + theme_article()
+
+```
+
+```{r gam_time}
+ggplot(wind_all, 
+       aes(decTime, wind_m.s, 
+           color = plotID, shape = locType, group = locType)) + 
+  geom_point() + geom_smooth(method = "gam") + 
+  scale_shape_manual(values = c(0:2)) + 
+  facet_wrap(~ locType) + theme(legend.position = "none")
+
+```
+
+```{r loess_date, message=FALSE}
+ggplot(wind_all, 
+       aes(date, wind_m.s, color = plotID, shape = locType, group = locID)) + 
+  geom_point() + geom_line() + theme_article() + 
+  scale_shape_manual(values = c(0:2)) + theme(legend.position = "none") +
+  facet_wrap(~ locType)
+
+summarywind <- wind_all %>% group_by(locID) %>% summarise(n = n(), mnwind = mean(wind_m.s))
+
+```

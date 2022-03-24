@@ -59,6 +59,13 @@ chart.Correlation(roya_quadmax %>%
                            tree_10m, evap) %>%
                     as.matrix(), histogram=TRUE, pch=19)
 
+chart.Correlation(roya_quadmax %>%
+                    select(roya.max, coffeeDensity_m,
+                           wind_m.s, shadeAvg_pc, avgTreeDist, 
+                           tree_10m, evap) %>%
+                    filter(tree_10m != max(tree_10m)) %>%
+                    as.matrix(), histogram=TRUE, pch=19)
+
 ```
 
 ### Relationships between transformed data
@@ -69,6 +76,15 @@ chart.Correlation(roya_quadmax %>%
                            wind_ln, shade_asqt, treedist_ln, 
                            tree_ln, evap) %>%
                     as.matrix(), histogram=TRUE, pch=19)
+
+chart.Correlation(roya_quadmax %>%
+                    select(roya_asqt, coffeeDens_ln,
+                           wind_ln, shade_asqt, treedist_ln, 
+                           tree_ln, evap) %>%
+                    filter(tree_ln != max(tree_ln)) %>%
+                    as.matrix(), histogram=TRUE, pch=19)
+
+
 
 ```
 
@@ -118,4 +134,18 @@ sem3 <- psem(o1, o2)
 
 summary(sem3, .progressBar = FALSE)
 plot(sem3)
+```
+
+```{r SEM4}
+
+p1 <- lm(wind_ln ~ shade_asqt, data = roya_quadmax)
+
+p2 <- lm(evap ~ wind_ln + shade_asqt, data = roya_quadmax)
+
+p3 <- lm(roya_asqt ~ evap + shade_asqt, data = roya_quadmax)
+
+sem4 <- psem(p1, p2, p3)
+
+summary(sem4, .progressBar = F)
+plot(sem4)
 ```
