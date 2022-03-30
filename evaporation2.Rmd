@@ -11,6 +11,7 @@ library(tidyverse)
 library(lubridate)
 library(egg)
 library(mgcv)
+library(PerformanceAnalytics) # For chart.Correlation
 
 ```
 
@@ -166,9 +167,12 @@ View prediction curves by plots. Curves show estimated prediction based on the "
 
 ```{r predictions_plot}
 
-dateloccombo <- evap_all %>% group_by(locID) %>% summarize(dateFac = factor(quantile(date, p = 0.5, type = 1)), .groups = "drop")
+dateloccombo <- evap_all %>% 
+  group_by(locID) %>% 
+  summarize(dateFac = factor(quantile(date, p = 0.5, type = 1)), .groups = "drop")
 
-newdata_dateloc <- dateloccombo %>% slice(rep(1:n(), times = length(seq(6,15,by = 0.5)))) %>%
+newdata_dateloc <- dateloccombo %>% 
+  slice(rep(1:n(), times = length(seq(6,15,by = 0.5)))) %>%
   mutate(decTime = rep(seq(6,15,by = 0.5), each = nrow(dateloccombo)))
 
 pred_evap_0 <- predict(evap_lmer, newdata = newdata_dateloc)
@@ -196,9 +200,13 @@ ggplot(newdata_dateloc, aes(decTime)) +
 
 ```{r predictions_date}
 
-datelocunq <- evap_all %>% group_by(dateFac, locID) %>% summarize(n = n(), .groups = "drop")
+datelocunq <- evap_all %>% 
+  group_by(dateFac, locID) %>% 
+  summarize(n = n(), .groups = "drop")
 
-newdata_date <- datelocunq %>% select(dateFac, locID) %>% slice(rep(1:n(), times = length(seq(6,15,by = 0.5)))) %>%
+newdata_date <- datelocunq %>% 
+  select(dateFac, locID) %>% 
+  slice(rep(1:n(), times = length(seq(6,15,by = 0.5)))) %>%
   mutate(decTime = rep(seq(6,15,by = 0.5), each = nrow(datelocunq)))
 
 dpred_evap_0 <- predict(evap_lmer, newdata = newdata_date)
@@ -280,19 +288,105 @@ ggplot(pred_dat) +
 
 ```
 
+# Look at the relationship between standardized evap and other abiotic variables
+```{r evp~abiotic}
+# Summarize standardized/predicted evaporation data
+# - Reminder: evaporation for each plot at 10am for every census date
+d_evap = pred_dat %>%
+  group_by(locID) %>%
+  summarize(evap.1.avg = mean(pred.evap.1, na.rm = TRUE),
+            evap.1.min = min(pred.evap.1),
+            evap.1.max = max(pred.evap.1),
+            evap.1.range = evap.1.max - evap.1.min)
+# Load other measured independent variables
+d_ind <- read.csv("data/roya_independentVariables.csv") %>%
+  mutate(locID = as.factor(plotID))
+# Join all abiotic variables together
+d_allXs = d_evap %>%
+  left_join(d_ind, by = "locID")
+
+chart.Correlation(d_allXs %>%
+                    select(evap.1.avg, evap.1.min, evap.1.max, evap.1.range, 
+                           avgEvpRateConverted_g.mm2.s, # Compare methods
+                           avgEvpRateConverted2_g.mm2.s, 
+                           coffeeDensity_m, wind_m.s, shadeAvg_pc, 
+                           avgTreeDist, tree_10m, tree_30m, tree_50m) %>%
+                    # Removing outlier doesn't change correlations much
+                    #filter(avgTreeDist < 15) %>% 
+                    as.matrix(), histogram = TRUE, pch=19)
+```
+
+MH comments:
+
+* All of the metrics calculated from standardized evaporation rate correlate strongly with each other (r = 1), for some reason. Why should a site with high average evap_std have higher evp range? (confirmed with plot below)
+    * At least for now, I think we can consider these metrics interchangeable
+* +wind +evap (r = 0.20 *), and the new metrics seem to match the original evaporation values well, better than my original conversion methods.
+* We're still getting a weird, positive (significant) relationship between standardized evaporation metrics and tree density (r=0.26 **), especially at 30m radius. We expect a negative relationship, as +trees +shade -evaporation.
+    * There is a weak positive relationship between shade and tree density
+
+```{r graph - evap_std_avg~evap_std_range}
+### Does increasing predicted evaporation mean increase range?
+# Arrange histograms by increasing evap mean
+pred_dat_2 = pred_dat %>%
+  group_by(locID) %>%
+  summarize(evap.1.avg = mean(pred.evap.1, na.rm = TRUE))
+
+# Rank average evaporation rate and join with remaining data
+rank_no = data.frame(rank_start = c(1:nrow(pred_dat_2))) %>%
+  mutate(rank = ifelse(rank_start < 10, paste("00", rank_start, sep = ""),
+                       ifelse(rank_start < 100, paste("0", rank_start, sep = ""),
+                              rank_start)))
+
+# Add ranking to dataset
+pred_dat_2 = pred_dat_2 %>%
+  arrange(evap.1.avg) %>%
+  mutate(rank = rank_no$rank) %>%
+  right_join(pred_dat, by = "locID") %>%
+  mutate(rank = paste(rank, locID, sep="-"))
+
+# Plot
+ggplot(pred_dat_2) + 
+  # geom_histogram(aes(x = pred.evap.0), color = "green", alpha = 0.2) + 
+  geom_histogram(aes(x = pred.evap.1), color = "blue", alpha = 0.2) +
+  facet_wrap(~rank) + theme_article()
+```
+
+MH: by ranking these histograms in order of increasing mean, we see that sites with higher mean standardized evaporation rate also has higher range of evaporation across days.
+
+```{r evap~wind}
+chart.Correlation(d_allXs %>%
+                    select(evap.1.avg, evap.1.min, evap.1.max, evap.1.range, 
+                           avgEvpRate_g.mm2.s, 
+                           avgEvpRateConverted_g.mm2.s,
+                           avgEvpRateConverted2_g.mm2.s,
+                           wind_m.s) %>%
+                    as.matrix(), histogram = TRUE, pch=19)
+
+chart.Correlation(d_allXs %>%
+                    select(evap.1.avg, evap.1.min, evap.1.max, evap.1.range, 
+                           avgEvpRate_g.mm2.s, 
+                           avgEvpRateConverted_g.mm2.s,
+                           avgEvpRateConverted2_g.mm2.s,
+                           wind_m.s) %>%
+                    filter(wind_m.s > 0) %>%
+                    as.matrix(), histogram = TRUE, pch=19)
+```
+
+MH: These plots show how the new standardized evaporation rates compare with my earlier attempts, by looking at their relationship with wind velocity. Note the relationship between wind and raw evaporation rate (avgEvpRate_g.mm2.s). When we remove wind = 0 values, we see that the new standardized evaporation rates have a similar correlation with wind (r = 0.35 **) as the raw data. My previous standardizing method (avgEvpRateConverted_g.mm2.s and avgEvpRateConverted2_g.mm2.s) do not match the original relationship as well.
+
 # Look at the relationship between standardized evap and roya
 
 ```{r roya}
-roya <- readRDS("roya_uniqueplants_20210505.rds")
+roya <- readRDS("./data/roya_uniqueplants_20210505.rds")
 
-roya_quad16 <- roya %>% filter(hojas != 0) %>%
+roya_quad_allXs6 <- roya %>% filter(hojas != 0) %>%
   group_by(quadrat, year, date) %>% 
   summarize(roya.mn = mean(roya/hojas, na.rm = TRUE)) %>% 
   filter(date > 2016.5 & date < 2017.5)
 
-ggplot(roya_quad16, aes(date, roya.mn, group = quadrat)) + geom_line()
+ggplot(roya_quad_allXs6, aes(date, roya.mn, group = quadrat)) + geom_line()
 
-roya_quadmax <- roya_quad16 %>% group_by(quadrat) %>%
+roya_quadmax <- roya_quad_allXs6 %>% group_by(quadrat) %>%
   summarize(roya.max = max(roya.mn)) %>%
   mutate(locID = as.character(quadrat))
 
