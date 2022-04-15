@@ -9,6 +9,7 @@ require(tidyverse)
 find_peakvalley <- function(x, valuecol, datecol, max.offset){
   xvalue <- setNames(x[,c(datecol, valuecol)], c("date", "value")) %>% ungroup()
   first.date <- min(xvalue$date)
+  last.date <- max(xvalue$date) # MH added 04/11/22
   xvalue <- xvalue %>% 
     mutate(value_lag6 = lag(value, n=6, order_by = date)) %>%
     mutate(value_lag5 = lag(value, n=5, order_by = date)) %>%
