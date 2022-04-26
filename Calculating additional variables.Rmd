@@ -23,6 +23,18 @@ library(DT) # For datatable()
 source(file = "Functions/find_peakvalley.R")
 
 roya = readRDS(file = "data/roya_uniqueplants_20210505.rds")
+
+### Helpful things
+# Used for calculating change in time for rates
+all_times = expand.grid(quadrat = c(1:128), year = c(2015:2017), month = c(1:12)) %>%
+  mutate(month = ifelse(month < 10, paste("0", month, sep=""), month),
+         time = paste(year, month, sep = "-")) %>%
+  select(time, quadrat) %>%
+  arrange(time)
+timesteps = all_times %>% select(time) %>% unique()
+timesteps = timesteps %>%
+  arrange(time) %>%
+  mutate(step = c(1:nrow(timesteps)))
 ```
 
 
@@ -35,16 +47,10 @@ d_roya_subset = roya %>%
          month = ifelse(month < 10, paste("0", month, sep=""), month),
          time = paste(year, month, sep = "-")) %>%
   group_by(time, quadrat) %>%
-  summarize(inf_avg = mean(inf, na.rm = TRUE),
-            inf_total = sum(inf, na.rm = TRUE)) %>%
+  summarize(inf_avg = mean(inf, na.rm = TRUE)) %>%
   as.data.frame()
 
 # Fills in missing months
-all_times = expand.grid(quadrat = c(1:128), year = c(2015:2017), month = c(1:12)) %>%
-  mutate(month = ifelse(month < 10, paste("0", month, sep=""), month),
-         time = paste(year, month, sep = "-")) %>%
-  select(time, quadrat) %>%
-  arrange(time)
 d_roya_subset = all_times %>%
   left_join(d_roya_subset, by = c("time", "quadrat"))
 ```
@@ -54,11 +60,10 @@ d_roya_subset = all_times %>%
 ```{r all-quad-dynamics}
 d1 = d_roya_subset %>%
   group_by(time) %>%
-  summarize(inf_avg = mean(inf_avg, na.rm = TRUE),
-            inf_total = sum(inf_total, na.rm = TRUE))
+  summarize(inf_avg = mean(inf_avg, na.rm = TRUE))
 
 #barplot(inf_avg ~ time, data = d1, las=3) # Looks very similar
-barplot(inf_total ~ time, data = d1, las=3)
+barplot(inf_avg ~ time, data = d1, las=3)
 ```
 
 The rust cycle runs from May through May. Our abiotic variables were collected in Summer 2016, so perhaps we should try to predict the rate of increase in rust from May 2016 - May 2017.
@@ -67,7 +72,7 @@ Do individual quadrats vary much in this pattern?
 
 ```{r all-quad-indiv}
 # Plots of individual quadrat; takes too long to run
-# ggplot(data = d_roya_subset, aes(x = time, y = inf_total)) + 
+# ggplot(data = d_roya_subset, aes(x = time, y = inf_avg)) + 
 #   geom_bar(stat = "identity", color = "blue", alpha = 0.2) +
 #   facet_wrap(~quadrat)
 ```
@@ -80,12 +85,12 @@ Yes, there is a wide variation in each quadrat's trajectory. (Did not show graph
 d_124 = d_roya_subset %>%
   filter(quadrat == 124)
   
-trend = find_peakvalley(d_124, "inf_total", "time", 6)
-trend2 = find_peakvalley(d_124, "inf_total", "time", 3) # Doesn't find all the correct peaks and valleys
+trend = find_peakvalley(d_124, "inf_avg", "time", 6)
+trend2 = find_peakvalley(d_124, "inf_avg", "time", 3) # Doesn't find all the correct peaks and valleys
 
 datatable(trend)
 
-barplot(inf_total ~ time, data = d_124, las = 3)
+barplot(inf_avg ~ time, data = d_124, las = 3)
 ```
 
 To-do: 
@@ -96,21 +101,32 @@ To-do:
 
 ## Calculate rate of rust increase in 2016 season for each quadrat
 
+```{r summarize-inf}
+# Summarize level of infection for each quadrat
+d_roya_subset = roya %>%
+  filter(year %in% c(2015, 2016, 2017)) %>%
+  mutate(inf = ifelse(hojas == 0, NA, roya/hojas),
+         month = ifelse(month < 10, paste("0", month, sep=""), month),
+         time = paste(year, month, sep = "-")) %>%
+  group_by(time, quadrat) %>%
+  summarize(inf_avg = mean(inf, na.rm = TRUE)) %>%
+  as.data.frame()
+```
+
+
+### Rates using KL's function to find start_valley_date
+
+MH 4/26/22: originally, rate of increase was calculated as $\frac{inf_f-inf_i}{t_f-t_i}. Changed methods to calculate rates of increase as slope of linear regression, for data within n_months from the month with lowest rust value in 2016, as identified by KL's function.
+
 ```
 {r calc-rates, include=FALSE, warning=FALSE}
-# Used for calculating change in time for rates
-timesteps = all_times %>% select(time) %>% unique()
-timesteps = timesteps %>%
-  arrange(time) %>%
-  mutate(step = c(1:nrow(timesteps)))
-
-
-# For each quadrat, find start and end dates of increase
-d_quad_rates = data.frame()
+# For each quadrat, find start date of increase
+n_months = 6 # Number of months for regression
+d_rates = data.frame()
 for (quad in unique(d_roya_subset$quadrat)) {
   # Calculate all peaks and valleys between 2015-2017
   data = d_roya_subset %>% filter(quadrat == quad)
-  all_peaks_valleys = find_peakvalley(data, "inf_total", "time", 6)
+  all_peaks_valleys = find_peakvalley(data, "inf_avg", "time", 6)
   
   # Find valley in 2016
   start_valley_date = all_peaks_valleys %>%
@@ -121,66 +137,154 @@ for (quad in unique(d_roya_subset$quadrat)) {
     start_valley_date = NA
   }
   
-  # Given run's start date, find run's end date
-  end_peak_date = NA
+  ##### Old version, March 2022 #####
+  # # Given run's start date, find run's end date
+  # end_peak_date = NA
+  # if(!is.na(start_valley_date)) {
+  #   # Find all runs
+  #   all_runs = find_runs(all_peaks_valleys)
+  #   # Find targeted run
+  #   run = all_runs %>% 
+  #     filter(date == start_valley_date) %>%
+  #     select(runID, runtype)
+  #   # Look for end date of targeted run
+  #   if (run$runtype == "growth") {
+  #     end_peak_date = all_runs %>%
+  #       filter(runID == runID) %>%
+  #       slice_max(date) %>%
+  #       pull(date)
+  #   }
+  # }
+  # 
+  # newrow = data.frame(quad = quad,
+  #                     start = start_valley_date,
+  #                     end = end_peak_date)
+  # # Calculate rust increase rate if quadrat has a run
+  # if(!is.na(newrow$start) && !is.na(newrow$end)) {
+  #   newrow = newrow %>%
+  #     mutate(inf_avg_i = data[data$time == start, "inf_avg"],
+  #            inf_avg_f = data[data$time == end, "inf_avg"],
+  #            t_i = timesteps[timesteps$time == start, "step"],
+  #            t_f = timesteps[timesteps$time == end, "step"],
+  #            rate = (inf_avg_f-inf_avg_i)/(t_f - t_i))
+  # } else {
+  #   newrow = newrow %>%
+  #     mutate(inf_avg_i = NA, inf_avg_f = NA, t_i = NA, t_f = NA, rate = NA)
+  # }
+  
+  ##### Version April 2022 ##### 
+  ### Calculate slope of inf_avg ~ month linear regression, for 6 months
+  # Find end date for n_months
   if(!is.na(start_valley_date)) {
-    # Find all runs
-    all_runs = find_runs(all_peaks_valleys)
-    # Find targeted run
-    run = all_runs %>% 
-      filter(date == start_valley_date) %>%
-      select(runID, runtype)
-    # Look for end date of targeted run
-    if (run$runtype == "growth") {
-      end_peak_date = all_runs %>%
-        filter(runID == runID) %>%
-        slice_max(date) %>%
-        pull(date)
-    }
+    start_time_step = timesteps %>%
+      filter(time == start_valley_date) %>% pull(step)
+    end_peak_date = timesteps %>%
+      filter(step == start_time_step + n_months) %>%
+      pull(time)
   }
   
-  newrow = data.frame(quad = quad,
-                      start = start_valley_date,
-                      end = end_peak_date)
-  # Calculate rust increase rate if quadrat has a run
-  if(!is.na(newrow$start) && !is.na(newrow$end)) {
-    newrow = newrow %>%
-      mutate(inf_tot_i = data[data$time == start, "inf_total"],
-             inf_tot_f = data[data$time == end, "inf_total"],
-             t_i = timesteps[timesteps$time == start, "step"],
-             t_f = timesteps[timesteps$time == end, "step"],
-             rate = (inf_tot_f-inf_tot_i)/(t_f - t_i))
+  if(!is.na(start_valley_date) && !is.na(end_peak_date)) {
+    # Create mini dataset
+    d1 = d_roya_subset %>%
+      filter(quadrat == quad, time >= start_valley_date, time <= end_peak_date) %>%
+      left_join(timesteps, by = "time") %>%
+      mutate(inf_avg = inf_avg + 1) # Offset by +1 to accomodate zeroes
+    # Run exponential regression
+    model = lm(log(inf_avg) ~ step, data = d1)
+    # Compile results
+    newrow = data.frame(quadrat = quad,
+                        start = start_valley_date,
+                        end = end_peak_date,
+                        n_steps = length(na.omit(d1$inf_avg)),
+                        slope = model$coefficients[2],
+                        r2 = summary(model)$r.squared)
+    # n_steps is different from n_months, since not all months have data
   } else {
-    newrow = newrow %>%
-      mutate(inf_tot_i = NA, inf_tot_f = NA, t_i = NA, t_f = NA, rate = NA)
+    newrow = data.frame(quadrat = quad, start = start_valley_date,
+                        end = end_peak_date, n_steps = NA, slope = NA, r2 = NA)
   }
   
   # Add quadrat's data to results
-  d_quad_rates = rbind(d_quad_rates, newrow)
+  d_rates = rbind(d_rates, newrow)
 }
-save(d_quad_rates, file = "Calculating additional variables.Rdata")
+
+rownames(d_rates) = NULL
 ```
 
 Reducing max.offset leads to more missing values, so let's stick with max.offset = 6 for now.
 
+### Ranges calculated by manually finding start date of increase
 
-```{r}
-load(file = "Calculating additional variables.Rdata")
+MH: I manually looked through barplots of each quadrat and selected valleys and peak dates, saved in `Calculating additional variables manual dates.csv`. I manually found both start and end dates, but we'll only use the start date here and use the same window of time as above, when calculating more automatically.
 
-datatable(d_quad_rates)
 ```
+{r cal-rates-manual-dates, include=FALSE, warning=FALSE}
+### Manually determine ranges (month of start and end for an increase)
 
-Metadata
+# Program to manually look through each quadrat to find peaks and valley
+# d1 = d_roya_subset %>%
+#   mutate(type = ifelse(is.na(inf_avg), "empty", "ori"),
+#          inf_avg = ifelse(is.na(inf_avg), 0.1, inf_avg))
+# result = data.frame()
+# x = "start"
+# quad = 1
+# while (x != "end") {
+#   p = ggplot(d1 %>% filter(quadrat == quad), 
+#          aes(x = time, y = inf_avg, fill = type)) +
+#     geom_bar(stat="identity") +
+#     ggtitle(quad) +
+#     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+#   print(p)
+#   print(paste("Quadrat: ", quad))
+#   x = readline(prompt="Command: ")
+#   if(x == "c") {
+#     quad = quad + 1
+#   } else if(x == "z" && quad > 1) {
+#     quad = quad - 1
+#   }
+#   if (quad > 128) { x = "end" }
+# }
+## Saved result in "Calculating additional variables manual dates.csv"
 
-* quad = quad ID
-* start = the starting month in 2016 of the infection increase
-* end = the ending month of the infection increase, i.e., the peak of the infection for that season, which may be in 2017
-* inf_tot_i = total infection level (proportion of infected leaves on all ~5 plants in the quadrat) at the start of the infection
-* inf_tot_f = final infection level (proportion of infected leaves on all ~5 plants in the quadrat) at the end of the infection
-* t_i = a numeric value for the month when the infection started
-* t_f = a numeric value for the month when the infection ended
-    * t_f - t_i = the number of months the infection increase took place over
-* rate = the rate of increase in the total number of infected leaves for all ~5 plants in the quadrat; $\frac{inf_{tot,f}-inf_{tot,i}}{t_{f}-t_{i}}$
+# Calculate n_months for each increase range
+d_quad_dates_manual = read.csv("Calculating additional variables manual dates.csv",
+                        stringsAsFactors = FALSE) %>%
+  left_join(timesteps %>% rename(start_valley_date = time, start_step = step), 
+            by = "start_valley_date") %>%
+  left_join(timesteps %>% rename(end_peak_date = time, end_step = step), 
+            by = "end_peak_date") %>%
+  mutate(n_months = end_step - start_step)
+
+# Compile data for each run, and calculate data from linear regression
+sel_quad = d_quad_dates_manual %>%
+  select(quadrat, start_valley_date) %>%
+  na.omit() %>% pull(quadrat)
+n_months = 6 # Number of months to compile data for
+result = data.frame()
+for (quad in sel_quad) {
+  start_date = d_quad_dates_manual %>%
+    filter(quadrat == quad) %>% pull(start_valley_date)
+  start_step = d_quad_dates_manual %>% 
+    filter(quadrat == quad) %>% pull(start_step)
+  end_date = timesteps %>% filter(step == start_step + n_months) %>%
+    pull(time)
+  d1 = d_roya_subset %>% 
+    filter(quadrat == quad, time >= start_date, time <= end_date) %>%
+    left_join(timesteps, by = "time")
+  model = lm(inf_avg ~ step, data = d1)
+  newrow = data.frame(quadrat = quad,
+                      start = start_date,
+                      end = end_date,
+                      n_steps = length(na.omit(d1$inf_avg)),
+                      slope = model$coefficients[2],
+                      r2 = summary(model)$r.squared)
+  # n_steps is different from n_months, since not all months have data
+  result = bind_rows(result, newrow)
+}
+rownames(result) = NULL
+d_rates_manual = result
+
+```
 
 # Rust infection load of neighboring quadrats (July 2016)
 
@@ -217,12 +321,9 @@ for (i in 1:nrow(d_quads_neighbors)) {
   neighbors = d_quads_neighbors$neighbors[i][[1]]
   neighboring_infection = d_roya_2016_07 %>%
     filter(quadrat %in% neighbors) %>%
-    summarize(inf = mean(inf_total, na.rm = TRUE)) %>% pull(inf)
+    summarize(inf = mean(inf_avg, na.rm = TRUE)) %>% pull(inf)
   d_quads_neighbors[i,]$inf_neigh = neighboring_infection
 }
-
-save(d_quad_rates, d_quads_neighbors,
-     file = "Calculating additional variables.Rdata")
 ```
 
 There are 31 edge quadrats and 97 interior quadrats, with 5 corner quadrats that only have three neighbors. If we do a t-test comparing interior vs edge quadrats, there is no significant difference in the average neighbor's infection.
@@ -230,7 +331,8 @@ There are 31 edge quadrats and 97 interior quadrats, with 5 corner quadrats that
 Neighbor is defined as the neighboring quadrat.
 
 ```{r}
-# Loaded data file above
+# Loaded data
+load("Calculating additional variables.Rdata")
 
 ### Compare neighboring infection load of edge vs internior quadrats
 t.test(d_quads_neighbors[d_quads_neighbors$type=="edge","inf_neigh"], 
@@ -252,3 +354,17 @@ Metadata
 * neighbors = quad ID of neighboring quads
 * n_neigh = number of neighboring quads, varies depending on whether quad is an edge, order, or interior
 * inf_neigh = average total infection of neighboring quads, where total infection is the proportion of leaves infected summed across all ~5 plants for that quad
+
+# Save all calculations
+```
+{r}
+save(d_rates, d_rates_manual, d_quads_neighbors,
+     file = "Calculating additional variables.Rdata")
+```
+d_rates = rates of increase where starting date is determined by KL's algorithm
+
+d_rates_manual = rates of increase where starting date was manually determined by MH
+
+d_quads_neighbors = for each quadrat in July 2016, the average per quadrat infection of neighboring quadrats
+
+For both, we used roya data available for a 6 month window following the start date. Some months had no data, so the number of data points used for regression is often smaller than 6.
