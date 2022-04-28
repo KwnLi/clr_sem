@@ -1,0 +1,59 @@
+---
+title: "Tree_spatial"
+author: "Kevin"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: yes
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(sf)
+evap <- read.csv("./data/evap_raw.csv")
+treegeo <- readRDS("Data/irlanda_geo2020v3.rds")
+```
+
+## Getting the quadrat coords from data
+
+They are stored in the raw data
+
+```{r quad_coords}
+quad_coords <- evap %>% select(plotID, lat, lon) %>% filter(lat !="") %>%
+  mutate(lat_num = as.numeric(gsub("N ", "", lat)),
+         lon_num = as.numeric(gsub("W", "", gsub(" ", "", lon))))
+
+
+quad_sf <- st_as_sf(quad_coords, coords = c("lon_num", "lat_num"))
+
+ggplot(quad_sf) + geom_sf() + geom_sf_label(aes(label = plotID))
+
+```
+
+Some corrections
+
+```{r coord_correct}
+
+quad_coords[quad_coords$plotID == 74, "lon_num"] <- 92.34398 # correction? from 92.94398
+quad_coords[quad_coords$plotID == 48, "lat_num"] <- 15.16841 # correction? from 92.34322
+quad_coords[quad_coords$plotID == 87, "lat_num"] <- 15.16771 # correction? from 15.16171
+
+quad_sf <- st_as_sf(quad_coords, coords = c("lon_num", "lat_num"))
+
+ggplot(quad_sf) + geom_sf() + geom_sf_label(aes(label = plotID))
+
+
+```
+
+```{r plot_trees}
+trees <- st_as_sf(treegeo)
+
+trees16 <- trees %>% filter(tree2016 == "tree") %>% 
+
+ggplot(quad_sf) + geom_sf(data = trees16, inherit.aes = F) + geom_sf() + geom_sf_label(aes(label = plotID))
+
+
+```
