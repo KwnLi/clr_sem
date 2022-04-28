@@ -19,8 +19,9 @@ Raw wind
 ```{r combine_raw}
 rawdata <- read.csv("./data/evap_raw.csv")
 rawdata_ctrl <- read.csv("./data/evap_control.csv")
+ind_var <- read.csv("./data/roya_independentVariables.csv")
 
-wind_all <- rawdata %>% select(date:type, wind_time, wind_m.s) %>%
+wind_all <- rawdata %>% select(date:type, wind_time, wind_m.s, treeGBH_cm) %>%
   filter(!is.na(wind_m.s)) %>% mutate(plotID = as.character(plotID)) %>%
   bind_rows(
     rawdata_ctrl %>% select(date:type, wind_time, wind_m.s) %>%
@@ -36,7 +37,8 @@ wind_all <- rawdata %>% select(date:type, wind_time, wind_m.s) %>%
   mutate(locID = factor(ifelse(is.na(plotID), type, plotID))) %>%  # locID and locType are just to help with plotting
   mutate(locType = ifelse(is.na(plotID), type, "plot")) %>%
   mutate(dateFac = factor(date)) %>%
-  mutate(dateNum = as.numeric(date - as.Date("05/30/2016", "%m/%d/%Y")))
+  mutate(dateNum = as.numeric(date - as.Date("05/30/2016", "%m/%d/%Y"))) %>% 
+  left_join(ind_var %>% mutate(plotID = as.character(plotID)) %>% select(-wind_m.s), by = "plotID")
 
 ```
 
@@ -70,5 +72,19 @@ ggplot(wind_all,
   facet_wrap(~ locType)
 
 summarywind <- wind_all %>% group_by(locID) %>% summarise(n = n(), mnwind = mean(wind_m.s))
+
+```
+
+```{r model}
+library(lme4)
+library(ggeffects)
+
+wind_plots <- wind_all %>% filter(!is.na(coffeeDensity_m))
+
+windmod <- lmer(wind_m.s ~ coffeeDensity_m + treeGBH_cm + poly(decTime, 2) + (1|dateFac),
+          data = wind_all, 
+          REML = F)
+
+plot(ggpredict(windmod))
 
 ```
