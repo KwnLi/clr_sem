@@ -12,6 +12,7 @@ library(lubridate)
 library(egg)
 library(mgcv)
 library(PerformanceAnalytics) # For chart.Correlation
+library(DHARMa)
 
 ```
 
@@ -139,7 +140,7 @@ evap_lmer_polyre1v3 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (1|dateFac) + 
 
 performance::compare_performance(evap_lmer, evap_lmer_polyre1, evap_lmer_polyre2, evap_lmer_polyre1v2, evap_lmer_polyre1v3)
 
-testlmer <- simulateResiduals(evap_lmer_polyre, n=1000)
+testlmer <- simulateResiduals(evap_lmer_polyre1, n=1000)
 
 testlmer.grp <- recalculateResiduals(testlmer, group = evap_all$locID)
 
@@ -274,17 +275,77 @@ pred_dat <- data.frame(locID = rep(unique(evap_all$locID), each = length(unique(
 pred_dat$pred.evap.0 = exp(predict(evap_lmer, newdata = pred_dat))
 pred_dat$pred.evap.1 = exp(predict(evap_lmer_polyre1, newdata = pred_dat))
 
+# prediction at the population mean of day effects (at 10 AM)
+pred_10AM <- data.frame(locID = unique(evap_all$locID), 
+                       decTime = 10, 
+                       dateFac = NA)
+
+pred_10AM$pred.evap.1 = exp(predict(evap_lmer_polyre1, newdata = pred_10AM, 
+                                    re.form = ~ (1|locID), allow.new.levels = TRUE))
+
 ggplot(pred_dat) + 
   # geom_histogram(aes(x = pred.evap.0), color = "green", alpha = 0.2) + 
   geom_histogram(aes(x = pred.evap.1), color = "blue", alpha = 0.2) +
+  geom_vline(data = pred_10AM, mapping = aes(xintercept = pred.evap.1)) +
   facet_wrap(~locID) + theme_article()
 
 ```
 
-# cross validation of the best model
-```{r cross_val}
+# model uncertainty based on data subsets
+```{r uncertainty}
 
-# using the model with 
+# randomly draw 90% data
+set.seed(5)
+n.rep = 1000
+
+crossvaldat <- list()
+crosspred <- list()
+crossmods <- list()
+
+for(i in 1:n.rep){
+  sub.index <- sample(x = 1:nrow(evap_all), size = round(0.9*nrow(evap_all)))
+  
+  data.i <- evap_all[sub.index,]
+  data.out <- evap_all[!1:nrow(evap_all) %in% sub.index, ]
+    
+  model.i <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 1)|dateFac) + (1|locID),
+          data = data.i, 
+          REML = F)
+  
+  new.i <- data.frame(locID = unique(data.i$locID), 
+                       decTime = 10, 
+                       dateFac = NA)
+  
+  new.i$pred = exp(predict(model.i, newdata = new.i, re.form = ~ (1|locID), allow.new.levels = TRUE))
+  
+  predict.i <- exp(predict(model.i))
+  out.predict <- exp(predict(model.i, newdata = data.out, allow.new.levels = TRUE))
+  
+  crossvaldat[[i]] <- bind_rows(data.i %>% select(locID, decTime, dateFac, evapRate_ng) %>% 
+                                  mutate(predict = predict.i) %>% mutate(cross.class = "train"),
+                                data.out %>% select(locID, decTime, dateFac, evapRate_ng) %>% 
+                                  mutate(predict = out.predict) %>% mutate(cross.class = "out")) %>%
+    mutate(i = i)
+  
+  crosspred[[i]] <- new.i %>% select(locID, pred) %>% pivot_wider(names_from = locID, values_from = pred)
+  
+  crossmods[[i]] <- model.i
+}
+
+preduncert <- bind_rows(crosspred) %>% rownames_to_column(var = "sim") %>% mutate(sim = as.numeric(sim)) %>%
+  pivot_longer(cols = -sim) %>%
+  rename(locID = name, pred = value)
+
+ggplot(preduncert, aes(x = pred)) + geom_histogram(fill = "red", alpha = 0.2) + facet_wrap(~locID) + 
+  geom_vline(data = pred_10AM, mapping = aes(xintercept = pred.evap.1)) +
+  theme_article()
+
+pred_sum <- preduncert %>% group_by(locID) %>%
+  summarize(mn = mean(pred, na.rm = T), sd = sd(pred, na.rm = T)) %>%
+  left_join(evap_all %>% select(locID, locType) %>% distinct())
+
+ggplot(pred_sum, aes(locID, mn)) + geom_pointrange(aes(ymin = mn - sd, ymax = mn + sd, color = locType)) + 
+  theme_article() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
 ```
 
