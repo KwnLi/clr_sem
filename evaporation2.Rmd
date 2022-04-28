@@ -307,45 +307,106 @@ for(i in 1:n.rep){
   
   data.i <- evap_all[sub.index,]
   data.out <- evap_all[!1:nrow(evap_all) %in% sub.index, ]
-    
-  model.i <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 1)|dateFac) + (1|locID),
-          data = data.i, 
-          REML = F)
+  
+  model.i0 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (1|dateFac) + (1|locID), 
+                   data = data.i, REML = F)
+  model.i1 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 1)|dateFac) +
+                     (1|locID), data = data.i, REML = F)
+  model.i2 <- lmer(log(evapRate_ng) ~ poly(decTime, 2) + (poly(decTime, 2)|dateFac) +
+                     (1|locID), data = data.i, REML = F)
   
   new.i <- data.frame(locID = unique(data.i$locID), 
                        decTime = 10, 
                        dateFac = NA)
   
-  new.i$pred = exp(predict(model.i, newdata = new.i, re.form = ~ (1|locID), allow.new.levels = TRUE))
+  new.i$pred0 = exp(predict(model.i0, newdata = new.i, re.form = ~ (1|locID), 
+                            allow.new.levels = TRUE))
+  new.i$pred1 = exp(predict(model.i1, newdata = new.i, re.form = ~ (1|locID), 
+                            allow.new.levels = TRUE))
+  new.i$pred2 = exp(predict(model.i2, newdata = new.i, re.form = ~ (1|locID), 
+                            allow.new.levels = TRUE))
   
-  predict.i <- exp(predict(model.i))
-  out.predict <- exp(predict(model.i, newdata = data.out, allow.new.levels = TRUE))
+  predict.i0 <- exp(predict(model.i0))
+  predict.i1 <- exp(predict(model.i1))
+  predict.i2 <- exp(predict(model.i2))
+  
+  out.predict0 <- exp(predict(model.i0, newdata = data.out, allow.new.levels = TRUE))
+  out.predict1 <- exp(predict(model.i1, newdata = data.out, allow.new.levels = TRUE))
+  out.predict2 <- exp(predict(model.i2, newdata = data.out, allow.new.levels = TRUE))
   
   crossvaldat[[i]] <- bind_rows(data.i %>% select(locID, decTime, dateFac, evapRate_ng) %>% 
-                                  mutate(predict = predict.i) %>% mutate(cross.class = "train"),
+                                  mutate(cross.class = "train") %>%
+                                  bind_cols(predict0 = predict.i0,
+                                            predict1 = predict.i1,
+                                            predict2 = predict.i2),
                                 data.out %>% select(locID, decTime, dateFac, evapRate_ng) %>% 
-                                  mutate(predict = out.predict) %>% mutate(cross.class = "out")) %>%
-    mutate(i = i)
+                                  mutate(cross.class = "out") %>%
+                                  bind_cols(predict0 = out.predict0,
+                                            predict1 = out.predict1,
+                                            predict2 = out.predict2)
+                                ) %>% mutate(i = i)
   
-  crosspred[[i]] <- new.i %>% select(locID, pred) %>% pivot_wider(names_from = locID, values_from = pred)
+  crosspred[[i]] <- new.i
   
-  crossmods[[i]] <- model.i
+  crossmods[[i]] <- list(model.i0, model.i1, model.i2)
 }
 
-preduncert <- bind_rows(crosspred) %>% rownames_to_column(var = "sim") %>% mutate(sim = as.numeric(sim)) %>%
-  pivot_longer(cols = -sim) %>%
-  rename(locID = name, pred = value)
-
-ggplot(preduncert, aes(x = pred)) + geom_histogram(fill = "red", alpha = 0.2) + facet_wrap(~locID) + 
-  geom_vline(data = pred_10AM, mapping = aes(xintercept = pred.evap.1)) +
-  theme_article()
-
-pred_sum <- preduncert %>% group_by(locID) %>%
-  summarize(mn = mean(pred, na.rm = T), sd = sd(pred, na.rm = T)) %>%
+pred_sum <- bind_rows(crosspred) %>% group_by(locID) %>%
+  summarize(mn.pred0 = mean(pred0, na.rm = T), 
+            sd.pred0 = sd(pred0, na.rm = T),
+            mn.pred1 = mean(pred1, na.rm = T),
+            sd.pred1 = sd(pred1, na.rm = T),
+            mn.pred2 = mean(pred2, na.rm = T), 
+            sd.pred2 = sd(pred2, na.rm = T),
+            .groups = "drop") %>%
+  pivot_longer(cols = mn.pred0:sd.pred2, names_to = c(".value", "model"), names_sep = "\\.") %>%
   left_join(evap_all %>% select(locID, locType) %>% distinct())
 
-ggplot(pred_sum, aes(locID, mn)) + geom_pointrange(aes(ymin = mn - sd, ymax = mn + sd, color = locType)) + 
+ggplot(pred_sum, aes(locID, mn, color = model)) +
+  geom_pointrange(aes(ymin = mn - sd, ymax = mn + sd)) + 
   theme_article() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+rmse.fullmodel0 <- sqrt(mean(residuals(evap_lmer)^2))
+rmse.fullmodel1 <- sqrt(mean(residuals(evap_lmer_polyre1)^2))
+rmse.fullmodel2 <- sqrt(mean(residuals(evap_lmer_polyre2)^2))
+
+# error characteristics
+mcpred <- bind_rows(crossvaldat)
+
+rmse.out <- mcpred %>% 
+  mutate(error0 = predict0 - evapRate_ng,
+         error1 = predict1 - evapRate_ng,
+         error2 = predict2 - evapRate_ng) %>%
+  group_by(cross.class, i) %>% 
+  summarize(rmse0 = sqrt(mean(error0^2)),
+            rmse1 = sqrt(mean(error1^2)),
+            rmse2 = sqrt(mean(error2^2)),
+            .groups = "drop") %>%
+  pivot_wider(id_cols = i, names_from = cross.class, values_from = rmse0:rmse2) %>%
+  mutate(diff0 = rmse0_out - rmse0_train,
+         diff1 = rmse1_out - rmse1_train,
+         diff2 = rmse2_out - rmse2_train)
+
+rmse.long <- rmse.out %>% select(-(diff0:diff2)) %>%
+  pivot_longer(cols = rmse0_out:rmse2_train,
+               names_to = c("model", ".value"), names_sep = "_")
+
+ggplot(rmse.long) +
+  geom_histogram(aes(x = out), fill = "orange", alpha = 0.2) +
+  geom_histogram(aes(x = train), fill = "dark green", alpha = 0.2) + 
+  facet_wrap(~model) + theme_article()
+
+diff.long <- rmse.out %>% select(i, diff0:diff2) %>%
+  pivot_longer(cols = diff0:diff2, names_to = "model", values_to = "diff")
+
+ggplot(diff.long, aes(x = diff)) + geom_histogram() + 
+  geom_vline(xintercept = 0, color = "red") + facet_wrap(~model)
+
+ggplot(diff.long %>% group_by(model) %>% summarize(mean = mean(diff), 
+                                                   CI2.5 = quantile(diff, 0.0275),
+                                                   CI97.5 = quantile(diff, 0.975))) +
+  geom_vline(xintercept = 0) +
+  geom_pointrange(aes(x = mean, y = model, xmin = CI2.5, xmax = CI97.5))
 
 ```
 
