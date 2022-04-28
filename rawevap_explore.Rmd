@@ -1,0 +1,45 @@
+---
+title: "Explore raw evaporation data"
+author: "Chau Ho"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: yes
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+**Goal:** How does the raw evaporation data correlate with other abiotic variables?
+
+```{r init-load-data}
+library(tidyverse)
+library(lubridate) # Time calculations
+
+evap <- read.csv("./data/evap_raw.csv")
+evap_ctrl <- read.csv("./data/evap_control.csv")
+
+evap_all <- evap %>% select(date:evpRate_g.mm2.s) %>%
+  filter(paperID != "") %>%
+  bind_rows(
+    evap_ctrl %>% select(date:evpRate_g.mm2.s) %>%
+      filter(startTime != "") %>%
+      rename(paperID = ID)
+  ) %>%
+  mutate(startTime = as.POSIXlt(paste(date, startTime, sep = ":"), 
+                             format = "%m/%d/%Y:%H:%M:%S")) %>% # I convert the time and date columns to r formats
+  mutate(endTime = as.POSIXlt(paste(date, endTime, sep = ":"), 
+                             format = "%m/%d/%Y:%H:%M:%S")) %>%
+  mutate(date = as.Date(date, "%m/%d/%Y")) %>%
+  rowwise() %>% 
+  mutate(dateTime = mean(c(startTime, endTime))) %>% # the date/time at the center of the drying period
+  ungroup() %>%
+  mutate(decTime = hour(dateTime) + minute(dateTime)/60 + second(dateTime)/3600) %>% # the decimal time at the center of the drying period
+  mutate(evapRate_ng = ifelse(evpRate_g.mm2.s > 0, evpRate_g.mm2.s*1e9, 1)) %>%  # evaporation rate in nanograms, so the units aren't so small
+  mutate(locID = factor(ifelse(is.na(plotID), type, plotID))) %>%  # locID and locType are just to help with plotting
+  mutate(locType = ifelse(is.na(plotID), type, "plot")) %>%
+  mutate(dateFac = factor(date)) %>%
+  mutate(dateNum = as.numeric(date - as.Date("05/30/2016", "%m/%d/%Y")))
+```
+
