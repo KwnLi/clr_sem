@@ -79,26 +79,6 @@ Do individual quadrats vary much in this pattern?
 
 Yes, there is a wide variation in each quadrat's trajectory. (Did not show graph because takes too long to generate in every knit.)
 
-## Testing KL's functions
-
-```{r practice-using-functions}
-d_124 = d_roya_subset %>%
-  filter(quadrat == 124)
-  
-trend = find_peakvalley(d_124, "inf_avg", "time", 6)
-trend2 = find_peakvalley(d_124, "inf_avg", "time", 3) # Doesn't find all the correct peaks and valleys
-
-datatable(trend)
-
-barplot(inf_avg ~ time, data = d_124, las = 3)
-```
-
-To-do: 
-
-* Ask KL how max.offset works
-* Go over change I made in the functions file (find_peakvalley.R)
-    * Needed to add "last.date" on line 12
-
 ## Calculate rate of rust increase in 2016 season for each quadrat
 
 ```{r summarize-inf}
@@ -213,7 +193,7 @@ rownames(d_rates) = NULL
 
 Reducing max.offset leads to more missing values, so let's stick with max.offset = 6 for now.
 
-### Ranges calculated by manually finding start date of increase
+### Ranges calculated by manually finding start and end dates of increase
 
 MH: I manually looked through barplots of each quadrat and selected valleys and peak dates, saved in `Calculating additional variables manual dates.csv`. I manually found both start and end dates, but we'll only use the start date here and use the same window of time as above, when calculating more automatically.
 
@@ -257,24 +237,19 @@ d_quad_dates_manual = read.csv("Calculating additional variables manual dates.cs
 
 # Compile data for each run, and calculate data from linear regression
 sel_quad = d_quad_dates_manual %>%
-  select(quadrat, start_valley_date) %>%
+  select(quadrat, start_valley_date, end_peak_date) %>%
   na.omit() %>% pull(quadrat)
-n_months = 6 # Number of months to compile data for
 result = data.frame()
 for (quad in sel_quad) {
-  start_date = d_quad_dates_manual %>%
-    filter(quadrat == quad) %>% pull(start_valley_date)
-  start_step = d_quad_dates_manual %>% 
-    filter(quadrat == quad) %>% pull(start_step)
-  end_date = timesteps %>% filter(step == start_step + n_months) %>%
-    pull(time)
+  selected_quad = d_quad_dates_manual %>% filter(quadrat == quad)
   d1 = d_roya_subset %>% 
-    filter(quadrat == quad, time >= start_date, time <= end_date) %>%
+    filter(quadrat == quad, time >= selected_quad$start_valley_date, 
+           time <= selected_quad$end_peak_date) %>%
     left_join(timesteps, by = "time")
   model = lm(inf_avg ~ step, data = d1)
   newrow = data.frame(quadrat = quad,
-                      start = start_date,
-                      end = end_date,
+                      start = selected_quad$start_valley_date,
+                      end = selected_quad$end_peak_date,
                       n_steps = length(na.omit(d1$inf_avg)),
                       slope = model$coefficients[2],
                       r2 = summary(model)$r.squared)
