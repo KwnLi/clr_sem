@@ -22,8 +22,6 @@ library(ggplot2)
 library(DT) # For datatable()
 source(file = "Functions/find_peakvalley.R")
 
-roya = readRDS(file = "data/roya_uniqueplants_20210505.rds")
-
 ### Helpful things
 # Used for calculating change in time for rates
 all_times = expand.grid(quadrat = c(1:128), year = c(2015:2017), month = c(1:12)) %>%
@@ -35,19 +33,18 @@ timesteps = all_times %>% select(time) %>% unique()
 timesteps = timesteps %>%
   arrange(time) %>%
   mutate(step = c(1:nrow(timesteps)))
-```
 
+### Rust data
+roya = readRDS(file = "data/roya_uniqueplants_20210505.rds")
 
-# Rust increase rate for the 2016 season
-
-```{r summarize-all-quads}
+# Select rust data for 2016 season
 d_roya_subset = roya %>%
   filter(year %in% c(2015, 2016, 2017)) %>%
   mutate(inf = ifelse(hojas == 0, NA, roya/hojas),
          month = ifelse(month < 10, paste("0", month, sep=""), month),
          time = paste(year, month, sep = "-")) %>%
   group_by(time, quadrat) %>%
-  summarize(inf_avg = mean(inf, na.rm = TRUE)) %>%
+  summarize(inf_avg = mean(inf, na.rm = TRUE), .groups = "drop") %>%
   as.data.frame()
 
 # Fills in missing months
@@ -55,6 +52,8 @@ d_roya_subset = all_times %>%
   left_join(d_roya_subset, by = c("time", "quadrat"))
 ```
 
+
+# Rust increase rate for the 2016 season
 
 ## Overall 2016 rust season
 ```{r all-quad-dynamics}
@@ -195,7 +194,7 @@ Reducing max.offset leads to more missing values, so let's stick with max.offset
 
 ### Ranges calculated by manually finding start and end dates of increase
 
-MH: I manually looked through barplots of each quadrat and selected valleys and peak dates, saved in `Calculating additional variables manual dates.csv`. I manually found both start and end dates, but we'll only use the start date here and use the same window of time as above, when calculating more automatically.
+MH: I manually looked through barplots of each quadrat and selected valleys and peak dates, saved in `Calculating additional variables manual dates.csv`. I then calculated the rate of increase between these start and end dates.
 
 ```
 {r cal-rates-manual-dates, include=FALSE, warning=FALSE}
@@ -258,8 +257,16 @@ for (quad in sel_quad) {
 }
 rownames(result) = NULL
 d_rates_manual = result
+```
+
+```{r print-data}
+load("Calculating additional variables.Rdata")
+d_rates_manual %>%
+  mutate(across(c("slope", "r2"), ~ round(., digits = 4))) %>%
+  datatable()
 
 ```
+
 
 # Rust infection load of neighboring quadrats (July 2016)
 
