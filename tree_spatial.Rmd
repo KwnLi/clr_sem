@@ -13,8 +13,11 @@ output:
 
 ```{r setup, include=FALSE}
 library(sf)
+library(tidyverse)
+
 evap <- read.csv("./data/evap_raw.csv")
 treegeo <- readRDS("Data/irlanda_geo2020v3.rds")
+quadgeo <- readRDS("Data/quadrat_geo.rds")
 ```
 
 ## Getting the quadrat coords from data
@@ -41,19 +44,78 @@ quad_coords[quad_coords$plotID == 74, "lon_num"] <- 92.34398 # correction? from 
 quad_coords[quad_coords$plotID == 48, "lat_num"] <- 15.16841 # correction? from 92.34322
 quad_coords[quad_coords$plotID == 87, "lat_num"] <- 15.16771 # correction? from 15.16171
 
-quad_sf <- st_as_sf(quad_coords, coords = c("lon_num", "lat_num"))
+# and it is reversed
+quad_coords$lon_num <- -quad_coords$lon_num
+
+quad_sf <- st_as_sf(quad_coords, coords = c("lon_num", "lat_num"),
+                    crs = st_crs(4326))
 
 ggplot(quad_sf) + geom_sf() + geom_sf_label(aes(label = plotID))
 
+# alternative quadrats (exact centers)
+quad2_sf <- st_as_sf(quadgeo)
+
+ggplot(quad_sf) + geom_sf() + geom_sf_label(aes(label = plotID)) +
+  geom_sf_label(data = quadgeo, mapping = aes(label = quadrat), color = "red", inherit.aes = FALSE)
 
 ```
 
 ```{r plot_trees}
 trees <- st_as_sf(treegeo)
 
-trees16 <- trees %>% filter(tree2016 == "tree") %>% 
+trees16 <- trees %>% filter(tree2016 == "tree")
 
-ggplot(quad_sf) + geom_sf(data = trees16, inherit.aes = F) + geom_sf() + geom_sf_label(aes(label = plotID))
+ggplot(trees16) + geom_sf()
+
+ggplot(quad2_sf) + geom_sf(data = trees16, inherit.aes = F) + geom_sf() + geom_sf_label(aes(label = quadrat))
 
 
+```
+
+```{r inside}
+
+test <- st_is_within_distance(quad2_sf, trees16, dist = 10)
+
+test2 <- st_join(quad2_sf, trees16, join = st_is_within_distance, dist = 10)
+
+trees_of_test2 <- trees16 %>% filter(dataID %in% test2$dataID)
+
+ggplot(quad2_sf) + geom_sf() + geom_sf_label(aes(label = quadrat)) + geom_sf(data = trees_of_test2, inherit.aes = F, color = "green")
+
+
+distances <- c(3,5,10,15,20,30,40,50)
+
+bufflist <- list()
+for(i in 1:length(distances)){
+  bufflist[[i]] <- st_join(quad2_sf, trees16,
+                   join = st_is_within_distance,
+                   dist = distances[i]) %>%
+    select(quadrat, dataID, placa, gbh, latin1, common1) %>%
+    mutate(distance = distances[i])
+}
+
+buffertrees <- bind_rows(bufflist) %>% as_tibble() %>%
+  select(-geometry) %>%
+  mutate(dbh = gbh/pi) %>%
+  mutate(basal.area = pi*(dbh/2)^2)
+
+total_basal_area <- buffertrees %>% 
+  group_by(quadrat, distance) %>% 
+  summarize(tot.basal = sum(basal.area, na.rm = TRUE), .groups = "drop") %>% 
+  filter(!is.na(tot.basal)) %>%
+  pivot_wider(names_from = distance, values_from = tot.basal,
+              names_prefix = "total_basal_", 
+              values_fill = 0)
+
+total_trees <- buffertrees %>% 
+  filter(!is.na(placa)) %>%
+  group_by(quadrat, distance) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  pivot_wider(names_from = distance, values_from = n,
+              names_prefix = "total_trees_",
+              values_fill = 0)
+
+new_tree_var <- left_join(total_trees, total_basal_area, by = "quadrat")
+
+write.csv(new_tree_var, "new_tree_variables.csv", row.names = F)
 ```
